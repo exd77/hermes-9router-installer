@@ -75,7 +75,10 @@ NINE_ROUTER_PORT=20200 NINE_ROUTER_BASE_URL=http://localhost:20200 ./install.sh
 4. **Hermes install.** Pipes the official Hermes installer with `--skip-setup` so we control the flow ourselves. Falls back to symlinking `~/.hermes/hermes-agent/venv/bin/hermes` into `~/.local/bin` if `hermes` isn't on PATH yet.
 5. **Hermes gateway install.** Calls `hermes gateway install` to lay down the systemd/launchd service for the messaging gateway.
 6. **Hermes gateway setup (interactive).** Prints a green panel with instructions, then hands stdin straight to `hermes gateway setup` so you can paste your Telegram bot token + chat ID. After it returns, the script runs `hermes gateway restart` + `hermes gateway status` so the new token is live.
-7. **9Router install.** Runs `sudo npm i -g --foreground-scripts 9router` (or plain `npm i -g ...` if `sudo` isn't available). The `--foreground-scripts` flag surfaces native build errors instead of swallowing them.
+7. **9Router install (matches the user's intended flow).**
+   1. `sudo npm install -g 9router` (falls back to `npm install -g 9router` if no `sudo`).
+   2. After install, the script invokes `9router --tray --no-browser --skip-update`. That's the non-interactive equivalent of running `9router` and selecting the **Hide to Tray (Background)** option from its menu — it boots the Web UI Dashboard server and immediately hides the process.
+   3. The installer waits up to 10 seconds for port `${NINE_ROUTER_PORT:-20128}` to bind, then prints the public dashboard URL.
 8. **9Router SQLite driver hardening.** Locates the global `9router` install dir and force-builds `better-sqlite3` from source there if a working native binding isn't present, so the dashboard doesn't crash with `[DB] No SQLite driver available`.
 9. **Helpers.** Writes `9router-bg`, `9router-dashboard`, and `9router-tray` to `~/.local/bin/`.
 10. **Background service.** Writes `~/.config/systemd/user/9router.service` with `Restart=always`, runs `loginctl enable-linger` so it survives logout, and writes a desktop autostart `.desktop` for graphical sessions.

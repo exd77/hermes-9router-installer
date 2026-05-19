@@ -209,11 +209,13 @@ setup_hermes_gateway() {
 }
 
 install_9router() {
-  log "Installing 9Router CLI globally via 'sudo npm i -g 9router'"
+  log "Step 1/3: Installing 9Router globally"
   if has sudo; then
-    sudo npm i -g --foreground-scripts 9router
+    log "Running: sudo npm install -g 9router"
+    sudo npm install -g --foreground-scripts 9router
   else
-    npm i -g --foreground-scripts 9router
+    log "Running: npm install -g 9router"
+    npm install -g --foreground-scripts 9router
   fi
 
   if ! has 9router; then
@@ -222,6 +224,49 @@ install_9router() {
   ok "9Router CLI installed: $(command -v 9router)"
 
   ensure_9router_sqlite_driver
+  start_9router_with_tray
+}
+
+start_9router_with_tray() {
+  # 9router CLI menu (run `9router` interactively) shows three options:
+  #   1) Web UI Dashboard
+  #   2) Terminal UI
+  #   3) Hide to Tray (Background)   ← we want this one
+  #
+  # The non-interactive equivalent is `9router --tray --no-browser --skip-update`
+  # which boots the Web UI Dashboard server AND immediately hides it to the
+  # system tray (or runs detached on headless servers). That's exactly what
+  # "Hide to Tray (Background)" does in the menu.
+
+  local nine_bin
+  nine_bin="$(command -v 9router)" || fail "9router not on PATH"
+
+  log "Step 2/3: Starting 9Router (Web UI Dashboard)"
+  log "Step 3/3: Hide to Tray (Background) via '9router --tray'"
+
+  local LOGFILE="${HOME}/.9router-bg.log"
+  : > "$LOGFILE" || true
+
+  if has nohup; then
+    nohup "$nine_bin" --tray --no-browser --skip-update >>"$LOGFILE" 2>&1 &
+  else
+    "$nine_bin" --tray --no-browser --skip-update >>"$LOGFILE" 2>&1 &
+  fi
+  disown 2>/dev/null || true
+
+  local pid="$!"
+  ok "9Router running in background (PID $pid). Log: $LOGFILE"
+
+  # Give the dashboard a moment to bind the port before we print the URL
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    if (echo > "/dev/tcp/127.0.0.1/${NINE_ROUTER_PORT}") >/dev/null 2>&1; then
+      ok "9Router dashboard is up on port ${NINE_ROUTER_PORT}"
+      return 0
+    fi
+    sleep 1
+  done
+  warn "9Router didn't open port ${NINE_ROUTER_PORT} within 10s — check ${LOGFILE}"
 }
 
 ensure_9router_sqlite_driver() {
@@ -279,11 +324,13 @@ write_helpers() {
 
   cat > "$BIN_DIR/9router-bg" <<EOF
 #!/usr/bin/env bash
+# Run 9Router and Hide to Tray (Background) — same as picking option
+# "Hide to Tray (Background)" from the interactive '9router' menu.
 set -euo pipefail
 export PORT="${NINE_ROUTER_PORT}"
 export HOSTNAME="${NINE_ROUTER_HOST}"
 export NEXT_PUBLIC_BASE_URL="${NINE_ROUTER_BASE_URL}"
-exec 9router
+exec 9router --tray --no-browser --skip-update "\$@"
 EOF
   chmod +x "$BIN_DIR/9router-bg"
 
@@ -457,8 +504,17 @@ install_skills() {
 }
 
 start_service() {
+  if has 9router; then
+    log "Starting 9Router and Hide to Tray (Background) via '9router --tray'"
+    local LOGFILE="${HOME}/.9router-bg.log"
+    nohup 9router --tray --no-browser --skip-update >>"$LOGFILE" 2>&1 &
+    disown 2>/dev/null || true
+    ok "9Router started (PID $!). Log: $LOGFILE"
+    return 0
+  fi
+
   if [ -x "$BIN_DIR/9router-tray" ]; then
-    log "Starting 9Router and Hiding to tray (Background)"
+    log "Starting 9Router and Hide to Tray (Background)"
     "$BIN_DIR/9router-tray" || warn "9router-tray exited non-zero"
     return 0
   fi
@@ -518,7 +574,6 @@ install_all() {
   write_tray_launcher
   write_hermes_gateway_note
   install_skills
-  start_service
   show_dashboard
   ok "Install complete"
 }
