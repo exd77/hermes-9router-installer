@@ -1,0 +1,15 @@
+# OS / runtime junk
+*.log
+*.bak_*
+*.tmp
+__pycache__/
+node_modules/
+
+# Local-only
+.env
+*.local
+
+# Editor
+.vscode/
+.idea/
+*.swp
