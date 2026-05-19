@@ -69,8 +69,6 @@ ensure_base_tools() {
   local missing=()
   has curl || missing+=(curl)
   has git || missing+=(git)
-  has node || missing+=(node)
-  has npm || missing+=(npm)
   has python3 || missing+=(python3)
 
   if ((${#missing[@]})); then
@@ -78,11 +76,59 @@ ensure_base_tools() {
     if has apt-get; then
       log "Installing missing packages via apt-get"
       sudo apt-get update
-      sudo apt-get install -y curl git nodejs npm python3 python3-venv python3-pip xdg-utils
+      sudo apt-get install -y curl git python3 python3-venv python3-pip xdg-utils ca-certificates gnupg
     else
       fail "Install missing tools manually first: ${missing[*]}"
     fi
   fi
+
+  ensure_node_22
+  ensure_native_build_toolchain
+}
+
+ensure_node_22() {
+  local node_major=0
+  if has node; then
+    node_major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+  fi
+  if [ "${node_major:-0}" -ge 22 ]; then
+    ok "Node $(node -v) is OK (≥22 required for 9Router node:sqlite fallback)"
+    return 0
+  fi
+
+  warn "Node ${node_major:-missing} < 22 detected. 9Router needs Node ≥22.5 for the built-in node:sqlite driver."
+  if ! has apt-get; then
+    fail "Please install Node.js ≥22 manually, then rerun the installer."
+  fi
+
+  log "Installing Node.js 22 from NodeSource"
+  if has node && has apt-get; then
+    sudo apt-get remove -y nodejs npm 2>/dev/null || true
+  fi
+  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+  sudo apt-get install -y nodejs
+
+  if ! has node; then
+    fail "Node.js install via NodeSource failed"
+  fi
+  ok "Node $(node -v) installed"
+}
+
+ensure_native_build_toolchain() {
+  # better-sqlite3 native build needs python3 + make + g++ + build-essential.
+  # If the toolchain is missing, npm silently skips the optional dep and
+  # 9Router falls back to node:sqlite (or sql.js — which often fails too).
+  if has make && has g++ && has python3; then
+    ok "Native build toolchain present (make, g++, python3)"
+    return 0
+  fi
+  if ! has apt-get; then
+    warn "Native build toolchain incomplete and apt-get not available."
+    warn "better-sqlite3 will likely be skipped; install build-essential + python3 manually."
+    return 0
+  fi
+  log "Installing native build toolchain (build-essential, python3, make, g++)"
+  sudo apt-get install -y build-essential python3 make g++ pkg-config libsqlite3-dev
 }
 
 install_hermes() {
@@ -165,15 +211,66 @@ setup_hermes_gateway() {
 install_9router() {
   log "Installing 9Router CLI globally via 'sudo npm i -g 9router'"
   if has sudo; then
-    sudo npm i -g 9router
+    sudo npm i -g --foreground-scripts 9router
   else
-    npm i -g 9router
+    npm i -g --foreground-scripts 9router
   fi
 
   if ! has 9router; then
     fail "9Router CLI not found after npm install. Pastikan global npm bin ada di PATH."
   fi
   ok "9Router CLI installed: $(command -v 9router)"
+
+  ensure_9router_sqlite_driver
+}
+
+ensure_9router_sqlite_driver() {
+  # Make sure 9Router has a working SQLite driver. Without one, the dashboard
+  # crashes with: "[DB] No SQLite driver available (bun/better/node/sql.js all failed)".
+  # better-sqlite3 is an optionalDependency in 9router, so it gets skipped
+  # silently when the native toolchain is missing or the npm registry
+  # downloads a non-matching prebuilt for the host CPU.
+  log "Ensuring 9Router has a working SQLite driver (better-sqlite3 native build)"
+
+  local nine_dir=""
+  if has 9router; then
+    local bin
+    bin="$(readlink -f "$(command -v 9router)" 2>/dev/null || command -v 9router)"
+    nine_dir="$(dirname "$(dirname "$bin")")/lib/node_modules/9router"
+  fi
+  [ -d "$nine_dir" ] || nine_dir="$(npm root -g 2>/dev/null)/9router"
+
+  if [ ! -d "$nine_dir" ]; then
+    warn "Could not locate 9router install dir; skipping driver hardening."
+    return 0
+  fi
+
+  if [ -d "$nine_dir/node_modules/better-sqlite3/build/Release" ] && \
+     ls "$nine_dir/node_modules/better-sqlite3/build/Release"/*.node >/dev/null 2>&1; then
+    ok "better-sqlite3 native binding already present"
+    return 0
+  fi
+
+  log "Building better-sqlite3 inside ${nine_dir}"
+  local NPM_RUN="npm i better-sqlite3 --foreground-scripts --build-from-source --no-save"
+  if has sudo; then
+    if sudo bash -c "cd '$nine_dir' && $NPM_RUN"; then
+      ok "better-sqlite3 built from source for 9Router"
+      return 0
+    fi
+  else
+    if (cd "$nine_dir" && eval "$NPM_RUN"); then
+      ok "better-sqlite3 built from source for 9Router"
+      return 0
+    fi
+  fi
+
+  warn "better-sqlite3 build failed. 9Router will try node:sqlite (Node ≥22.5) or sql.js."
+  if has node; then
+    local nv
+    nv="$(node -p 'process.versions.node' 2>/dev/null || echo unknown)"
+    warn "Current Node version: $nv. Need ≥22.5 for the node:sqlite fallback."
+  fi
 }
 
 write_helpers() {
